@@ -1,0 +1,37 @@
+Metadata-Version: 2.4
+Name: openimis-be-productive_inclusion
+Version: 1.0.0
+Summary: The openIMIS Backend productive inclusion (SERE) module.
+Home-page: https://openimis.org/
+Author: ANIES
+Author-email: dev@anies.gn
+License: GNU AGPL v3
+Classifier: Environment :: Web Environment
+Classifier: Framework :: Django
+Classifier: Framework :: Django :: 3.0
+Classifier: Intended Audience :: Developers
+Classifier: License :: OSI Approved :: GNU Affero General Public License v3
+Classifier: Operating System :: OS Independent
+Classifier: Programming Language :: Python
+Classifier: Programming Language :: Python :: 3.8
+Description-Content-Type: text/markdown
+Requires-Dist: django
+Requires-Dist: django-db-signals
+Requires-Dist: djangorestframework
+Requires-Dist: openimis-be-core
+Requires-Dist: openimis-be-location
+Requires-Dist: pandas
+Requires-Dist: openpyxl
+Dynamic: author
+Dynamic: author-email
+Dynamic: classifier
+Dynamic: description
+Dynamic: description-content-type
+Dynamic: home-page
+Dynamic: license
+Dynamic: requires-dist
+Dynamic: summary
+
+# openIMIS Backend productive_inclusion reference module
+
+Gestion des groupements SERE et des activités d'inclusion productive.
