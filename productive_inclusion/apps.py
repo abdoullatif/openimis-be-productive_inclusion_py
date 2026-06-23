@@ -3,15 +3,16 @@ from django.apps import AppConfig
 MODULE_NAME = 'productive_inclusion'
 
 DEFAULT_CONFIG = {
-    'gql_sere_group_search_perms': ['122001'],
-    'gql_sere_group_create_perms': ['122002'],
-    'gql_sere_group_update_perms': ['122003'],
-    'gql_sere_group_delete_perms': ['122004'],
-    'gql_sere_member_search_perms': ['122005'],
-    'gql_sere_activity_search_perms': ['122006'],
-    'gql_sere_activity_create_perms': ['122007'],
-    'gql_sere_activity_update_perms': ['122008'],
-    'gql_sere_activity_delete_perms': ['122009'],
+  # Plage 124xxx dédiée — ne pas réutiliser 122001-122006 (core : gestion des rôles).
+    'gql_sere_group_search_perms': ['124001'],
+    'gql_sere_group_create_perms': ['124002'],
+    'gql_sere_group_update_perms': ['124003'],
+    'gql_sere_group_delete_perms': ['124004'],
+    'gql_sere_member_search_perms': ['124005'],
+    'gql_sere_activity_search_perms': ['124006'],
+    'gql_sere_activity_create_perms': ['124007'],
+    'gql_sere_activity_update_perms': ['124008'],
+    'gql_sere_activity_delete_perms': ['124009'],
 }
 
 

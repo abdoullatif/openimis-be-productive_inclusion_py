@@ -29,4 +29,22 @@ Mêmes filtres que `sereGroup` (sans pagination) : `importCode_Icontains`, `name
 
 Retour : `totalGroups`, `totalMembers`, `groupsByPrefecture` (`prefectureName` = niveau `locationHierarchy.district` / type D en base).
 
-Droit : **122001** (comme la liste). L’ancien argument `search` sur `sereGroup` est retiré.
+Droit liste SERE : **124001**. Récap `sereGroupSummary` : **124001**.
+
+## Droits openIMIS (plage **124001–124009**)
+
+Ne pas utiliser **122001–122006** : réservés au module **core** (query / create / update / delete / duplicate / replace **roles**).
+
+| Droit | Libellé |
+|-------|---------|
+| 124001 | Recherche groupements SERE |
+| 124002 | Création groupement SERE |
+| 124003 | Mise à jour groupement SERE |
+| 124004 | Suppression groupement SERE |
+| 124005 | Recherche membres SERE |
+| 124006 | Recherche activités SERE |
+| 124007 | Création activité SERE |
+| 124008 | Mise à jour activité SERE |
+| 124009 | Suppression activité SERE |
+
+Import REST : **124001** (même droit que la liste SERE).
