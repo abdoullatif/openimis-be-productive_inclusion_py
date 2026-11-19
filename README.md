@@ -7,7 +7,14 @@ Paramètres multipart : `file` (obligatoire), `strategy`, `dry_run`.
 - **strategy** : `INSERT` (nouveaux groupements seulement), `UPDATE` (existant seulement), `INSERT_AND_UPDATE` (défaut, upsert).
 - **dry_run** : `true` / `1` / `yes` — exécution en simulation (rollback, aucune persistance).
 
-Feuille groupements : colonnes `id`, `nom_groupement`, `localite` (ou `id_village`) = **identifiant du village** (id numérique, uuid ou code ; lieu type **V** actif).
+Feuille groupements : colonnes `id`, `nom_groupement`, puis **localisation** selon l’une des deux alternatives :
+
+1. **Hiérarchie par noms** (prioritaire si renseignée) : `region`, `prefecture`, `sous_prefecture`, `district`  
+   - `district` = nom du village (Location type **V**) — **obligatoire** dans ce mode  
+   - `region` → type R, `prefecture` → type D, `sous_prefecture` → type W  
+2. **Identifiant village** : `localite` (ou `id_village`) = id numérique, uuid ou code d’un lieu type **V** actif  
+
+Si la hiérarchie est fournie mais introuvable, l’import tente ensuite `localite` si présente.
 
 Feuille membres : `id_groupement`, `nom`, `prenom`, `telephone`, `fonction`, `type_beneficiaire`, **`code_menage`** (code ménage du membre).
 

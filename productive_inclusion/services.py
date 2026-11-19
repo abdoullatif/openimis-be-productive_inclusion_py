@@ -5,8 +5,16 @@ import pandas as pd
 from django.db import transaction
 from django.db.models import Q
 
-from productive_inclusion.location_utils import resolve_village_location
-from productive_inclusion.models import SereActivity, SereGroup, SereMember
+from productive_inclusion.location_utils import (
+    resolve_village_by_admin_names,
+    resolve_village_location,
+)
+from productive_inclusion.models import (
+    SereActivity,
+    SereGroup,
+    SereMember,
+    SereMemberPresence,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -26,10 +34,20 @@ GROUP_SHEET_ALIASES = {
     'nom_groupement': 'name',
     'groupement': 'name',
     'nom': 'name',
+    # Alternative 1 : id / uuid / code du village (Location type V)
     'localite': 'village_id',
     'localité': 'village_id',
     'id_village': 'village_id',
     'id_village_uuid': 'village_id',
+    # Alternative 2 : hiérarchie administrative par noms
+    'region': 'region',
+    'région': 'region',
+    'prefecture': 'prefecture',
+    'préfecture': 'prefecture',
+    'sous_prefecture': 'sous_prefecture',
+    'sous_préfecture': 'sous_prefecture',
+    'sousprefecture': 'sous_prefecture',
+    'district': 'district',
 }
 
 MEMBER_SHEET_ALIASES = {
@@ -46,7 +64,19 @@ MEMBER_SHEET_ALIASES = {
     'type_bénéficiaire': 'beneficiary_type',
     'code_menage': 'code_menage',
     'code_ménage': 'code_menage',
+    'nombre_presences': 'presence_count',
+    'nombre_présences': 'presence_count',
+    'nb_presences': 'presence_count',
+    'nb_présences': 'presence_count',
+    'nbre_presences': 'presence_count',
+    'presences': 'presence_count',
+    'présences': 'presence_count',
+    'presence_count': 'presence_count',
+    'presencecount': 'presence_count',
 }
+
+# Plafond pour éviter des imports accidentels trop volumineux.
+MAX_PRESENCE_COUNT = 500
 
 ACTIVITY_SHEET_ALIASES = {
     'id': 'import_code',
@@ -137,6 +167,42 @@ def _history_save_if_changed(instance, audit_user):
     return False
 
 
+def _parse_presence_count(row):
+    """
+    Lit nombre_presences depuis la ligne Excel.
+    None = cellule vide / colonne absente → ne pas modifier le compteur.
+    """
+    raw = row.get('presence_count') if hasattr(row, 'get') else None
+    if raw is None or (isinstance(raw, float) and pd.isna(raw)):
+        return None
+    text = str(raw).strip()
+    if text == '' or text.lower() in ('nan', 'none', 'null'):
+        return None
+    try:
+        value = int(float(text.replace(',', '.')))
+    except (TypeError, ValueError):
+        raise ValueError(f'Nombre de présences invalide: {raw!r} (entier attendu).')
+    if value < 0:
+        raise ValueError(f'Nombre de présences négatif interdit: {value}.')
+    if value > MAX_PRESENCE_COUNT:
+        raise ValueError(
+            f'Nombre de présences trop élevé ({value}). Maximum autorisé: {MAX_PRESENCE_COUNT}.'
+        )
+    return value
+
+
+def _apply_member_presence_count(member, target_count, audit_user, stats):
+    """Met à jour SereMember.presence_count (source de vérité)."""
+    current = int(member.presence_count or 0)
+    if current == target_count:
+        stats['presences_unchanged'] += 1
+        return False
+    member.presence_count = target_count
+    _history_save(member, audit_user)
+    stats['presences_created'] += 1
+    return True
+
+
 def _member_fields_from_row(row):
     return {
         'last_name': _clean_value(row.get('last_name')),
@@ -149,25 +215,24 @@ def _member_fields_from_row(row):
 
 
 def _find_existing_member(group, fields):
-    """Correspondance : code_ménage si renseigné, sinon nom + prénom dans le groupement."""
-    qs = SereMember.objects.filter(group=group, is_deleted=False)
+    """Correspondance : code_ménage si renseigné, sinon nom + prénom (y compris soft-deleted)."""
+    qs = SereMember.objects.filter(group=group)
     code_menage = fields.get('code_menage')
     if code_menage:
-        return qs.filter(code_menage=code_menage).first()
+        return qs.filter(code_menage=code_menage).order_by('is_deleted').first()
     last_name = fields['last_name']
     first_name = fields.get('first_name')
     qs = qs.filter(last_name=last_name)
     if first_name:
-        return qs.filter(first_name=first_name).first()
-    return qs.filter(Q(first_name__isnull=True) | Q(first_name='')).first()
+        return qs.filter(first_name=first_name).order_by('is_deleted').first()
+    return qs.filter(Q(first_name__isnull=True) | Q(first_name='')).order_by('is_deleted').first()
 
 
 def _find_existing_activity(group, title):
     return SereActivity.objects.filter(
         group=group,
-        is_deleted=False,
         title=title,
-    ).first()
+    ).order_by('is_deleted').first()
 
 
 class SereImportService:
@@ -207,6 +272,14 @@ class SereImportService:
             'activity_rows_updated': 0,
             'activity_rows_unchanged': 0,
             'activity_rows_skipped': 0,
+            'presences_created': 0,
+            'presences_deleted': 0,
+            'presences_unchanged': 0,
+            'members_status_updated': 0,
+            'members_status_unchanged': 0,
+            'beneficiaries_suspended': 0,
+            'beneficiaries_reactivated': 0,
+            'beneficiaries_unmatched': 0,
             'warnings': [],
         }
 
@@ -274,13 +347,51 @@ class SereImportService:
             )
 
     def _resolve_village_for_row(self, row, stats):
+        """
+        Deux alternatives (priorité à la hiérarchie nominative si renseignée) :
+        1) region + prefecture + sous_prefecture + district (noms)
+        2) localite / id_village (id, uuid ou code du lieu type V)
+        """
+        region = _clean_value(row.get('region')) if 'region' in row.index else None
+        prefecture = _clean_value(row.get('prefecture')) if 'prefecture' in row.index else None
+        sous_prefecture = (
+            _clean_value(row.get('sous_prefecture')) if 'sous_prefecture' in row.index else None
+        )
+        district = _clean_value(row.get('district')) if 'district' in row.index else None
+        has_hierarchy_values = any((region, prefecture, sous_prefecture, district))
+
+        if has_hierarchy_values:
+            if not district:
+                stats['warnings'].append(
+                    'Localisation hiérarchique incomplète: la colonne district (village) est obligatoire '
+                    'lorsque region/prefecture/sous_prefecture/district sont utilisés.'
+                )
+            else:
+                loc = resolve_village_by_admin_names(
+                    region=region,
+                    prefecture=prefecture,
+                    sous_prefecture=sous_prefecture,
+                    district=district,
+                )
+                if loc:
+                    return loc, loc.name
+                stats['warnings'].append(
+                    'Village introuvable pour la hiérarchie '
+                    f'region={region!r}, prefecture={prefecture!r}, '
+                    f'sous_prefecture={sous_prefecture!r}, district={district!r}.'
+                )
+
+        if 'village_id' not in getattr(row, 'index', []):
+            return None, None
         raw = row.get('village_id')
         if raw is None or (isinstance(raw, float) and pd.isna(raw)):
             return None, None
+
         loc = resolve_village_location(raw)
         if not loc:
             stats['warnings'].append(
-                f'Village introuvable ou inactif pour la valeur {raw!r} (attendu: id, uuid ou code d\'un lieu type V).'
+                f'Village introuvable ou inactif pour la valeur {raw!r} '
+                f'(attendu: id, uuid ou code d\'un lieu type V).'
             )
             return None, None
         return loc, loc.name
@@ -296,14 +407,24 @@ class SereImportService:
 
             location, locality_label = self._resolve_village_for_row(row, stats)
 
-            existing = SereGroup.objects.filter(import_code=import_code, is_deleted=False).first()
+            # Unique sur import_code : inclure les soft-deleted pour pouvoir réactiver après reset.
+            existing = SereGroup.objects.filter(import_code=import_code).first()
 
             if strategy == SereImportStrategy.INSERT:
-                if existing:
+                if existing and not existing.is_deleted:
                     stats['groups_skipped'] += 1
                     stats['warnings'].append(
                         f'Groupement {import_code}: déjà existant, ignoré (stratégie INSERT).'
                     )
+                    continue
+                if existing and existing.is_deleted:
+                    existing.name = name
+                    existing.locality = locality_label
+                    existing.location = location
+                    existing.is_deleted = False
+                    _history_save(existing, self._audit_user)
+                    stats['groups_created'] += 1
+                    groups_touched[import_code] = existing
                     continue
                 group = SereGroup(
                     import_code=import_code,
@@ -366,6 +487,11 @@ class SereImportService:
             if not import_code or not last_name:
                 continue
 
+            try:
+                presence_count = _parse_presence_count(row)
+            except ValueError as exc:
+                raise ValueError(f'Membre « {last_name} » ({import_code}): {exc}') from exc
+
             group = groups_touched.get(import_code)
             if not group:
                 if not SereGroup.objects.filter(import_code=import_code, is_deleted=False).exists():
@@ -381,43 +507,66 @@ class SereImportService:
 
             existing = _find_existing_member(group, fields)
             label = f'{last_name} {fields.get("first_name") or ""}'.strip()
+            member = None
 
             if strategy == SereImportStrategy.INSERT:
-                if existing:
+                if existing and not existing.is_deleted:
                     stats['member_rows_skipped'] += 1
-                    continue
-                _history_save(SereMember(group=group, **fields), self._audit_user)
-                stats['member_rows_inserted'] += 1
-                continue
+                    member = existing
+                elif existing and existing.is_deleted:
+                    for key in ('last_name', 'first_name', 'phone', 'role', 'beneficiary_type', 'code_menage'):
+                        setattr(existing, key, fields[key])
+                    existing.is_deleted = False
+                    _history_save(existing, self._audit_user)
+                    stats['member_rows_inserted'] += 1
+                    member = existing
+                else:
+                    member = SereMember(group=group, **fields)
+                    _history_save(member, self._audit_user)
+                    stats['member_rows_inserted'] += 1
 
-            if strategy == SereImportStrategy.UPDATE:
+            elif strategy == SereImportStrategy.UPDATE:
                 if not existing:
                     stats['member_rows_skipped'] += 1
                     stats['warnings'].append(
                         f'Membre « {label} » ({import_code}) : inexistant, ignoré (stratégie UPDATE).'
                     )
-                    continue
-                for key in ('last_name', 'first_name', 'phone', 'role', 'beneficiary_type', 'code_menage'):
-                    setattr(existing, key, fields[key])
-                existing.is_deleted = False
-                if _history_save_if_changed(existing, self._audit_user):
-                    stats['member_rows_updated'] += 1
                 else:
-                    stats['member_rows_unchanged'] += 1
-                continue
+                    for key in ('last_name', 'first_name', 'phone', 'role', 'beneficiary_type', 'code_menage'):
+                        setattr(existing, key, fields[key])
+                    existing.is_deleted = False
+                    if _history_save_if_changed(existing, self._audit_user):
+                        stats['member_rows_updated'] += 1
+                    else:
+                        stats['member_rows_unchanged'] += 1
+                    member = existing
 
-            # INSERT_AND_UPDATE
-            if existing:
-                for key in ('last_name', 'first_name', 'phone', 'role', 'beneficiary_type', 'code_menage'):
-                    setattr(existing, key, fields[key])
-                existing.is_deleted = False
-                if _history_save_if_changed(existing, self._audit_user):
-                    stats['member_rows_updated'] += 1
-                else:
-                    stats['member_rows_unchanged'] += 1
             else:
-                _history_save(SereMember(group=group, **fields), self._audit_user)
-                stats['member_rows_inserted'] += 1
+                # INSERT_AND_UPDATE
+                if existing:
+                    for key in ('last_name', 'first_name', 'phone', 'role', 'beneficiary_type', 'code_menage'):
+                        setattr(existing, key, fields[key])
+                    existing.is_deleted = False
+                    if _history_save_if_changed(existing, self._audit_user):
+                        stats['member_rows_updated'] += 1
+                    else:
+                        stats['member_rows_unchanged'] += 1
+                    member = existing
+                else:
+                    member = SereMember(group=group, **fields)
+                    _history_save(member, self._audit_user)
+                    stats['member_rows_inserted'] += 1
+
+            if member is not None and presence_count is not None:
+                _apply_member_presence_count(
+                    member, presence_count, self._audit_user, stats,
+                )
+                from productive_inclusion.status_eligibility import (
+                    apply_member_status_from_presence,
+                )
+                apply_member_status_from_presence(
+                    member, self._audit_user, stats, sync_sp=False,
+                )
 
         return stats
 
@@ -442,8 +591,13 @@ class SereImportService:
             existing = _find_existing_activity(group, title)
 
             if strategy == SereImportStrategy.INSERT:
-                if existing:
+                if existing and not existing.is_deleted:
                     stats['activity_rows_skipped'] += 1
+                    continue
+                if existing and existing.is_deleted:
+                    existing.is_deleted = False
+                    _history_save(existing, self._audit_user)
+                    stats['activity_rows_inserted'] += 1
                     continue
                 activity = SereActivity(
                     group=group,
@@ -506,3 +660,43 @@ class SereActivityService:
         activity.is_deleted = True
         _history_save(activity, _resolve_audit_user(user))
         return activity
+
+
+class SereResetService:
+    """
+    Purge (soft-delete) de toutes les données SERE actives :
+    activités, présences, membres, groupements.
+    """
+
+    @staticmethod
+    def reset_all(user):
+        audit_user = _resolve_audit_user(user)
+        with transaction.atomic():
+            activities_deleted = SereActivity.objects.filter(is_deleted=False).update(
+                is_deleted=True,
+            )
+            presences_deleted = SereMemberPresence.objects.filter(is_deleted=False).update(
+                is_deleted=True,
+            )
+            members_deleted = SereMember.objects.filter(is_deleted=False).update(
+                is_deleted=True,
+            )
+            groups_deleted = SereGroup.objects.filter(is_deleted=False).update(
+                is_deleted=True,
+            )
+
+        logger.info(
+            'SERE reset by %s: groups=%s members=%s activities=%s presences=%s',
+            getattr(audit_user, 'username', audit_user),
+            groups_deleted,
+            members_deleted,
+            activities_deleted,
+            presences_deleted,
+        )
+        return {
+            'success': True,
+            'groups_deleted': groups_deleted,
+            'members_deleted': members_deleted,
+            'activities_deleted': activities_deleted,
+            'presences_deleted': presences_deleted,
+        }

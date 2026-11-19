@@ -16,6 +16,7 @@ from productive_inclusion.apps import ProductiveInclusionConfig
 from productive_inclusion.services import (
     SereImportService,
     SereImportStrategy,
+    SereResetService,
     _resolve_audit_user,
 )
 
@@ -47,14 +48,24 @@ def _is_valid_file(import_file):
 @permission_classes([check_user_rights(ProductiveInclusionConfig.gql_sere_group_search_perms)])
 def download_sere_import_template(request):
     try:
+        # Deux alternatives de localisation (au choix) :
+        # - region/prefecture/sous_prefecture/district (noms)
+        # - localite (id, uuid ou code du village type V)
         groups_df = pd.DataFrame(
-            columns=['id', 'nom_groupement', 'localite']
+            columns=[
+                'id',
+                'nom_groupement',
+                'region',
+                'prefecture',
+                'sous_prefecture',
+                'district',
+                'localite',
+            ]
         )
-        # localite = id du village (id numérique, uuid ou code), lieu type V
         members_df = pd.DataFrame(
             columns=[
                 'id_groupement', 'nom', 'prenom', 'telephone', 'fonction',
-                'type_beneficiaire', 'code_menage',
+                'type_beneficiaire', 'code_menage', 'nombre_presences',
             ]
         )
         activities_df = pd.DataFrame(
@@ -74,6 +85,47 @@ def download_sere_import_template(request):
         return response
     except Exception as exc:
         logger.error('Unexpected error while generating SERE import template', exc_info=exc)
+        return Response({'success': False, 'error': str(exc)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+@api_view(['POST'])
+@permission_classes([check_user_rights(ProductiveInclusionConfig.gql_sere_group_delete_perms)])
+def reset_sere_data(request):
+    """
+    Soft-delete de tous les groupements SERE, membres, activités et présences actifs.
+    Droit requis : 124004 (suppression SERE).
+    """
+    try:
+        result = SereResetService.reset_all(request.user)
+        return Response(result, status=status.HTTP_200_OK)
+    except ValueError as exc:
+        logger.error('Error while resetting SERE data', exc_info=exc)
+        return Response({'success': False, 'error': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+    except Exception as exc:
+        logger.error('Unexpected error while resetting SERE data', exc_info=exc)
+        return Response({'success': False, 'error': str(exc)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+@api_view(['POST'])
+@permission_classes([check_user_rights(ProductiveInclusionConfig.gql_sere_presence_validate_perms)])
+def validate_sere_presences(request):
+    """
+    Recalcule les statuts SERE et crée une tâche subvention (assignable).
+    La sync SP s'applique uniquement à la complétion de la tâche.
+    Droit requis : 124010.
+    """
+    try:
+        from productive_inclusion.subsidy_task import create_presence_validation_task
+
+        result = create_presence_validation_task(request.user)
+        if not result.get('success'):
+            return Response(result, status=status.HTTP_400_BAD_REQUEST)
+        return Response(result, status=status.HTTP_201_CREATED)
+    except ValueError as exc:
+        logger.error('Error while creating SERE subvention task', exc_info=exc)
+        return Response({'success': False, 'error': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+    except Exception as exc:
+        logger.error('Unexpected error while creating SERE subvention task', exc_info=exc)
         return Response({'success': False, 'error': str(exc)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 

@@ -73,7 +73,7 @@ class SereMemberGQLType(DjangoObjectType):
         description='Groupement SERE du membre (localisation via locationHierarchy).',
     )
     presence_count = graphene.Int(
-        description='Nombre de présences enregistrées (non supprimées) pour ce membre.',
+        description='Nombre de présences (compteur sur le membre).',
     )
     status_display = graphene.String(
         description='Libellé traduit du statut membre.',
@@ -117,10 +117,7 @@ class SereMemberGQLType(DjangoObjectType):
 
     @staticmethod
     def resolve_presence_count(member, info):
-        annotated = getattr(member, 'presence_count', None)
-        if annotated is not None:
-            return annotated
-        return member.presences.filter(is_deleted=False).count()
+        return int(getattr(member, 'presence_count', 0) or 0)
 
     @staticmethod
     def resolve_status_display(member, info):

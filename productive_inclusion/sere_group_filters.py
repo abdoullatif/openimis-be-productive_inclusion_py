@@ -80,7 +80,8 @@ def build_sere_group_queryset(user, perms, **kwargs):
         return SereGroup.objects.none()
 
     validity_filters = append_validity_filter(**kwargs)
-    qs = SereGroup.objects.filter(*validity_filters)
+    # Soft-deleted exclus par défaut (ex. après reset SERE).
+    qs = SereGroup.objects.filter(*validity_filters, is_deleted=False)
     return apply_sere_group_filters(qs, **kwargs)
 
 

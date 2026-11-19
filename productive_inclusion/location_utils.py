@@ -1,11 +1,25 @@
 """
 Résolution des localisations openIMIS (Location) pour les imports SERE et l'affichage hiérarchique.
 Les types courants : V = village, W = sous-district / ward, D = district, R = région.
+
+Correspondance libellés import ↔ types Location (alignée UI Inclusion productive) :
+  region          → R
+  prefecture      → D
+  sous_prefecture → W
+  district        → V  (village / district au sens métier)
 """
 
 import math
+import unicodedata
 
 from location.models import Location
+
+
+def _strip_accents(value):
+    if value is None:
+        return ''
+    normalized = unicodedata.normalize('NFKD', str(value))
+    return ''.join(ch for ch in normalized if not unicodedata.combining(ch))
 
 
 def resolve_village_location(raw):
@@ -41,6 +55,80 @@ def resolve_village_location(raw):
         return loc
 
     return base.filter(code=s).first()
+
+
+def _find_location_by_name(name, loc_type, parent=None):
+    """
+    Cherche un Location actif par nom (iexact, puis icontains si unique).
+    Si parent est fourni, restreint aux enfants de ce parent.
+    """
+    if not name:
+        return None
+    name = str(name).strip()
+    if not name:
+        return None
+
+    qs = Location.objects.filter(validity_to__isnull=True, type=loc_type)
+    if parent is not None:
+        qs = qs.filter(parent=parent)
+
+    exact = list(qs.filter(name__iexact=name)[:2])
+    if len(exact) == 1:
+        return exact[0]
+    if len(exact) > 1:
+        return None
+
+    loose = list(qs.filter(name__icontains=name)[:2])
+    if len(loose) == 1:
+        return loose[0]
+    if len(loose) > 1:
+        return None
+
+    # Dernier recours : égalité sans accents sur un échantillon borné (parent restreint)
+    if parent is not None or qs.count() <= 200:
+        target = _strip_accents(name).casefold()
+        accent_matches = [
+            loc for loc in qs.iterator()
+            if _strip_accents(loc.name).casefold() == target
+        ]
+        if len(accent_matches) == 1:
+            return accent_matches[0]
+    return None
+
+
+def resolve_village_by_admin_names(
+    region=None,
+    prefecture=None,
+    sous_prefecture=None,
+    district=None,
+):
+    """
+    Résout un village (type V) via la hiérarchie administrative nominative.
+
+    Ordre : region (R) → prefecture (D) → sous_prefecture (W) → district (V).
+    Les niveaux fournis restreignent la recherche ; `district` (nom du village) est requis.
+    """
+    district_name = (str(district).strip() if district is not None else '') or None
+    if not district_name:
+        return None
+
+    parent = None
+    chain = (
+        (region, 'R'),
+        (prefecture, 'D'),
+        (sous_prefecture, 'W'),
+    )
+    for raw_name, loc_type in chain:
+        name = (str(raw_name).strip() if raw_name is not None else '') or None
+        if not name:
+            continue
+        found = _find_location_by_name(name, loc_type, parent=parent)
+        if not found:
+            # Niveau fourni mais introuvable sous le parent courant → échec
+            return None
+        parent = found
+
+    return _find_location_by_name(district_name, 'V', parent=parent)
 
 
 def _level_dict(loc):

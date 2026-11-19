@@ -2,10 +2,15 @@
 Filtres liste globale des membres SERE (sous-menu Membres).
 """
 
-from django.db.models import Count, Prefetch, Q
+from django.db.models import Prefetch, Q
 
 from core.utils import append_validity_filter
 from productive_inclusion.models import SereGroup, SereMember
+
+
+def _base_member_qs(**kwargs):
+    validity_filters = append_validity_filter(**kwargs)
+    return SereMember.objects.filter(*validity_filters, is_deleted=False)
 
 
 def _prefetch_sere_group_with_location():
@@ -93,15 +98,6 @@ def apply_sere_member_filters(qs, **kwargs):
     return qs
 
 
-def _annotate_member_list(qs):
-    return qs.annotate(
-        presence_count=Count(
-            'presences',
-            filter=Q(presences__is_deleted=False),
-        ),
-    )
-
-
 def _apply_group_location_select_related(qs):
     """Liste globale Membres : jointures pour localités + sereGroup.locationHierarchy."""
     return qs.select_related(
@@ -118,9 +114,7 @@ def build_sere_member_list_queryset(user, perms, **kwargs):
     if not user.has_perms(perms):
         return SereMember.objects.none()
 
-    validity_filters = append_validity_filter(**kwargs)
-    qs = _annotate_member_list(SereMember.objects.filter(*validity_filters))
-    qs = _apply_group_location_select_related(qs)
+    qs = _apply_group_location_select_related(_base_member_qs(**kwargs))
     return apply_sere_member_filters(qs, **kwargs)
 
 
@@ -132,9 +126,7 @@ def build_sere_member_by_group_queryset(user, perms, **kwargs):
     if not user.has_perms(perms):
         return SereMember.objects.none()
 
-    validity_filters = append_validity_filter(**kwargs)
-    qs = _annotate_member_list(SereMember.objects.filter(*validity_filters))
-    qs = qs.prefetch_related(_prefetch_sere_group_with_location())
+    qs = _base_member_qs(**kwargs).prefetch_related(_prefetch_sere_group_with_location())
     return apply_sere_member_filters(qs, **kwargs)
 
 

@@ -152,6 +152,7 @@ class Query(graphene.ObjectType):
             filters.append(Q(group_id=group_id))
         if not info.context.user.has_perms(ProductiveInclusionConfig.gql_sere_activity_search_perms):
             return SereActivity.objects.none()
+        filters.append(Q(is_deleted=False))
         return gql_optimizer.query(SereActivity.objects.filter(*filters), info)
 
 
